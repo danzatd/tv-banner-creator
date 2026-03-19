@@ -20,9 +20,7 @@
           <div class="upload-icon">🖼️</div>
           <h2>Обложки</h2>
           <p>Фоновые изображения баннеров</p>
-          <label class="upload-btn" for="covers-input">
-            Выбрать обложки
-          </label>
+          <label class="upload-btn" for="covers-input">Выбрать обложки</label>
           <input type="file" id="covers-input" accept="image/*" multiple hidden>
           <div class="file-list" id="covers-list"></div>
         </div>
@@ -32,9 +30,7 @@
           <div class="upload-icon">✨</div>
           <h2>Логотипы</h2>
           <p>Файлы логотипов (PNG с прозрачностью)</p>
-          <label class="upload-btn" for="logos-input">
-            Выбрать логотипы
-          </label>
+          <label class="upload-btn" for="logos-input">Выбрать логотипы</label>
           <input type="file" id="logos-input" accept="image/*" multiple hidden>
           <div class="file-list" id="logos-list"></div>
         </div>
@@ -55,30 +51,19 @@
         </div>
       </div>
 
-      <!-- Generate -->
-      <div class="action-section">
-        <button id="generate-btn" class="generate-btn" disabled>
-          Создать баннеры
-        </button>
-        <div id="progress-wrap" class="progress-wrap hidden">
-          <div class="progress-bar">
-            <div class="progress-fill" id="progress-fill"></div>
-          </div>
-          <span id="progress-text">0 / 0</span>
-        </div>
-      </div>
-
       <!-- Preview -->
       <div id="preview-section" class="preview-section hidden">
-        <h3>Предпросмотр (<span id="preview-count">0</span> баннеров)</h3>
+        <div class="preview-header">
+          <h3>Предпросмотр <span class="preview-count-badge" id="preview-count"></span></h3>
+          <button id="download-btn" class="download-btn">⬇️ Скачать все как ZIP</button>
+        </div>
+        <div id="rendering-notice" class="rendering-notice hidden">Генерация...</div>
         <div class="preview-grid" id="preview-grid"></div>
-        <button id="download-btn" class="download-btn">
-          ⬇️ Скачать все как ZIP
-        </button>
       </div>
     </main>
 
-    <!-- Hidden canvas for rendering -->
+    <!-- Canvases -->
+    <canvas id="preview-canvas" style="display:none"></canvas>
     <canvas id="render-canvas" width="1920" height="1080" style="display:none"></canvas>
   </div>
 

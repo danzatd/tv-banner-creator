@@ -3,61 +3,71 @@
 const BANNER_W = 1920;
 const BANNER_H = 1080;
 
-// Logo container size
 const LOGO_W = 1000;
 const LOGO_H = 552;
 
-// Padding from banner edges (right, bottom)
-const PAD_RIGHT  = 76;
-const PAD_BOTTOM = 70;
+// Logo container: flush to bottom-right corner of banner
+const LOGO_X = BANNER_W - LOGO_W;  // 920
+const LOGO_Y = BANNER_H - LOGO_H;  // 528
 
-// Logo container position (top-left corner)
-const LOGO_X = BANNER_W - LOGO_W - PAD_RIGHT;   // 844
-const LOGO_Y = BANNER_H - LOGO_H - PAD_BOTTOM;  // 458
+// Padding for the logo image inside the container
+const INNER_PAD_RIGHT  = 76;
+const INNER_PAD_BOTTOM = 70;
 
-// Gradient: 137deg, from transparent (0%) to black (100%)
-// Matches CSS: linear-gradient(137deg, rgba(0,0,0,0) 0%, rgba(0,0,0,1) 100%)
-const GRADIENT_ANGLE_DEG = 137;
+// Gradient: 225deg (top-right → bottom-left), clipped to triangle
+const GRADIENT_ANGLE_DEG = 225;
+
+// Preview render scale (480×270)
+const PREVIEW_SCALE = 0.25;
+
+// Debounce delay for slider updates (ms)
+const SLIDER_DEBOUNCE = 120;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
 let coverFiles = [];
 let logoFiles  = [];
-let renderedBlobs = []; // { name, blob }
+
+// pairs[i] = { cover: File, logo: File, scale: Number, previewUrl: String }
+let pairs = [];
 
 // ─── DOM refs ────────────────────────────────────────────────────────────────
 
-const coversInput   = document.getElementById('covers-input');
-const logosInput    = document.getElementById('logos-input');
-const coversList    = document.getElementById('covers-list');
-const logosList     = document.getElementById('logos-list');
-const coversCard    = document.getElementById('covers-card');
-const logosCard     = document.getElementById('logos-card');
-const generateBtn   = document.getElementById('generate-btn');
-const progressWrap  = document.getElementById('progress-wrap');
-const progressFill  = document.getElementById('progress-fill');
-const progressText  = document.getElementById('progress-text');
+const coversInput    = document.getElementById('covers-input');
+const logosInput     = document.getElementById('logos-input');
+const coversList     = document.getElementById('covers-list');
+const logosList      = document.getElementById('logos-list');
+const coversCard     = document.getElementById('covers-card');
+const logosCard      = document.getElementById('logos-card');
 const previewSection = document.getElementById('preview-section');
-const previewGrid   = document.getElementById('preview-grid');
-const previewCount  = document.getElementById('preview-count');
-const downloadBtn   = document.getElementById('download-btn');
-const canvas        = document.getElementById('render-canvas');
-const ctx           = canvas.getContext('2d');
+const previewGrid    = document.getElementById('preview-grid');
+const previewCount   = document.getElementById('preview-count');
+const renderingNotice = document.getElementById('rendering-notice');
+const downloadBtn    = document.getElementById('download-btn');
 
-// ─── File input handlers ──────────────────────────────────────────────────────
+const previewCanvas  = document.getElementById('preview-canvas');
+const renderCanvas   = document.getElementById('render-canvas');
+const pCtx           = previewCanvas.getContext('2d');
+const rCtx           = renderCanvas.getContext('2d');
+
+// ─── File inputs ─────────────────────────────────────────────────────────────
 
 coversInput.addEventListener('change', e => {
   coverFiles = Array.from(e.target.files);
   renderFileList(coversList, coverFiles);
   coversCard.classList.toggle('has-files', coverFiles.length > 0);
-  updateGenerateBtn();
+  maybeAutoPreview();
 });
 
 logosInput.addEventListener('change', e => {
   logoFiles = Array.from(e.target.files);
   renderFileList(logosList, logoFiles);
   logosCard.classList.toggle('has-files', logoFiles.length > 0);
-  updateGenerateBtn();
+  maybeAutoPreview();
+});
+
+document.querySelectorAll('input[name="mode"]').forEach(radio => {
+  radio.addEventListener('change', maybeAutoPreview);
 });
 
 function renderFileList(listEl, files) {
@@ -66,153 +76,112 @@ function renderFileList(listEl, files) {
   ).join('');
 }
 
-function updateGenerateBtn() {
-  generateBtn.disabled = !(coverFiles.length > 0 && logoFiles.length > 0);
+// ─── Auto preview ─────────────────────────────────────────────────────────────
+
+function maybeAutoPreview() {
+  if (coverFiles.length > 0 && logoFiles.length > 0) {
+    buildPairs();
+    renderAllPreviews();
+  }
 }
 
-// ─── Generate ────────────────────────────────────────────────────────────────
-
-generateBtn.addEventListener('click', generate);
-
-async function generate() {
+function buildPairs() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
+  // Preserve existing scales if pair still exists
+  const prevScales = {};
+  pairs.forEach((p, i) => { prevScales[pairKey(p)] = p.scale; });
 
-  // Build pairs list
-  const pairs = [];
+  pairs = [];
   if (mode === 'pairs') {
     const len = Math.min(coverFiles.length, logoFiles.length);
     for (let i = 0; i < len; i++) {
-      pairs.push({ cover: coverFiles[i], logo: logoFiles[i] });
+      const p = { cover: coverFiles[i], logo: logoFiles[i], scale: 1.0, previewUrl: null };
+      p.scale = prevScales[pairKey(p)] ?? 1.0;
+      pairs.push(p);
     }
   } else {
     for (const cover of coverFiles) {
       for (const logo of logoFiles) {
-        pairs.push({ cover, logo });
+        const p = { cover, logo, scale: 1.0, previewUrl: null };
+        p.scale = prevScales[pairKey(p)] ?? 1.0;
+        pairs.push(p);
       }
     }
   }
-
-  if (pairs.length === 0) {
-    alert('Нет пар для генерации. Проверьте загруженные файлы.');
-    return;
-  }
-
-  // UI: show progress
-  renderedBlobs = [];
-  previewGrid.innerHTML = '';
-  previewSection.classList.add('hidden');
-  progressWrap.classList.remove('hidden');
-  generateBtn.disabled = true;
-
-  for (let i = 0; i < pairs.length; i++) {
-    const { cover, logo } = pairs[i];
-    progressText.textContent = `${i + 1} / ${pairs.length}`;
-    progressFill.style.width = `${((i + 1) / pairs.length) * 100}%`;
-
-    const blob = await renderBanner(cover, logo);
-    const name = buildFileName(cover.name, logo.name, i);
-    renderedBlobs.push({ name, blob });
-
-    // Add preview thumbnail
-    addPreview(blob, name);
-  }
-
-  progressText.textContent = `${pairs.length} / ${pairs.length}`;
-
-  previewCount.textContent = renderedBlobs.length;
-  previewSection.classList.remove('hidden');
-  generateBtn.disabled = false;
 }
 
-// ─── Canvas renderer ──────────────────────────────────────────────────────────
+function pairKey(p) {
+  return `${p.cover.name}__${p.logo.name}`;
+}
 
-async function renderBanner(coverFile, logoFile) {
-  const [coverImg, logoImg] = await Promise.all([
-    loadImage(coverFile),
-    loadImage(logoFile),
-  ]);
+// ─── Render all previews ──────────────────────────────────────────────────────
 
-  // Clear canvas
-  ctx.clearRect(0, 0, BANNER_W, BANNER_H);
+async function renderAllPreviews() {
+  previewSection.classList.remove('hidden');
+  previewGrid.innerHTML = '';
+  previewCount.textContent = pairs.length;
+  downloadBtn.disabled = true;
+  renderingNotice.classList.remove('hidden');
 
-  // 1. Draw cover stretched to full banner
-  ctx.drawImage(coverImg, 0, 0, BANNER_W, BANNER_H);
+  for (let i = 0; i < pairs.length; i++) {
+    const pair = pairs[i];
+    const blob = await renderBanner(pair.cover, pair.logo, pair.scale, PREVIEW_SCALE, pCtx, previewCanvas);
+    const url = URL.createObjectURL(blob);
+    if (pair.previewUrl) URL.revokeObjectURL(pair.previewUrl);
+    pair.previewUrl = url;
+    addPreviewCard(i);
+  }
 
-  // 2. Draw gradient overlay on logo container area
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(LOGO_X, LOGO_Y, LOGO_W, LOGO_H);
-  ctx.clip();
+  renderingNotice.classList.add('hidden');
+  downloadBtn.disabled = false;
+}
 
-  const grad = makeGradient(LOGO_X, LOGO_Y, LOGO_W, LOGO_H, GRADIENT_ANGLE_DEG);
-  ctx.fillStyle = grad;
-  ctx.fillRect(LOGO_X, LOGO_Y, LOGO_W, LOGO_H);
-  ctx.restore();
+// ─── Preview card ─────────────────────────────────────────────────────────────
 
-  // 3. Draw logo inside the container (fit, centered)
-  const { sx, sy, sw, sh } = fitInside(logoImg.width, logoImg.height, LOGO_W, LOGO_H);
-  ctx.drawImage(logoImg, LOGO_X + sx, LOGO_Y + sy, sw, sh);
+function addPreviewCard(index) {
+  const pair = pairs[index];
+  const scalePercent = Math.round(pair.scale * 100);
+  const label = `${pair.cover.name.replace(/\.[^/.]+$/, '')} + ${pair.logo.name.replace(/\.[^/.]+$/, '')}`;
 
-  // Export to blob
-  return new Promise(resolve => {
-    canvas.toBlob(resolve, 'image/jpeg', 0.92);
+  const item = document.createElement('div');
+  item.className = 'preview-item';
+  item.dataset.index = index;
+
+  item.innerHTML = `
+    <img src="${pair.previewUrl}" alt="Banner ${index + 1}" id="pimg-${index}" loading="lazy">
+    <div class="preview-controls">
+      <div class="preview-label" title="${label}">${label}</div>
+      <div class="card-slider-row">
+        <input type="range" id="pslider-${index}" min="20" max="150" value="${scalePercent}" step="1">
+        <span class="scale-label" id="pval-${index}">${scalePercent}%</span>
+      </div>
+    </div>
+  `;
+
+  previewGrid.appendChild(item);
+
+  // Attach slider listener with debounce
+  const slider = item.querySelector(`#pslider-${index}`);
+  const valEl  = item.querySelector(`#pval-${index}`);
+  let timer = null;
+
+  slider.addEventListener('input', () => {
+    const v = parseInt(slider.value);
+    valEl.textContent = v + '%';
+    pairs[index].scale = v / 100;
+    clearTimeout(timer);
+    timer = setTimeout(() => updateCardPreview(index), SLIDER_DEBOUNCE);
   });
 }
 
-/**
- * Build a canvas linear gradient for the logo container.
- * Converts CSS-style angle (degrees, from top clockwise) to canvas coordinates.
- */
-function makeGradient(x, y, w, h, angleDeg) {
-  // CSS gradient angle: 0deg = bottom→top, 90deg = left→right
-  // Convert to math angle (0 = right, CCW): mathAngle = 90 - cssAngle
-  const rad = (angleDeg * Math.PI) / 180;
-
-  // Unit direction vector (CSS: sin for x, -cos for y)
-  const dx = Math.sin(rad);
-  const dy = -Math.cos(rad);
-
-  // Half-diagonal projected onto direction
-  const halfLen = Math.abs(dx * w) / 2 + Math.abs(dy * h) / 2;
-
-  const cx = x + w / 2;
-  const cy = y + h / 2;
-
-  const x0 = cx - dx * halfLen;
-  const y0 = cy - dy * halfLen;
-  const x1 = cx + dx * halfLen;
-  const y1 = cy + dy * halfLen;
-
-  const grad = ctx.createLinearGradient(x0, y0, x1, y1);
-  grad.addColorStop(0, 'rgba(0,0,0,0)');   // 0% — transparent
-  grad.addColorStop(1, 'rgba(0,0,0,1)');   // 100% — opaque black
-  return grad;
-}
-
-/**
- * Fit srcW×srcH inside dstW×dstH, centered, preserving aspect ratio.
- * Returns offset and size within the destination box.
- */
-function fitInside(srcW, srcH, dstW, dstH) {
-  const scale = Math.min(dstW / srcW, dstH / srcH);
-  const sw = srcW * scale;
-  const sh = srcH * scale;
-  const sx = (dstW - sw) / 2;
-  const sy = (dstH - sh) / 2;
-  return { sx, sy, sw, sh };
-}
-
-// ─── Preview ──────────────────────────────────────────────────────────────────
-
-function addPreview(blob, name) {
+async function updateCardPreview(index) {
+  const pair = pairs[index];
+  const blob = await renderBanner(pair.cover, pair.logo, pair.scale, PREVIEW_SCALE, pCtx, previewCanvas);
   const url = URL.createObjectURL(blob);
-  const item = document.createElement('div');
-  item.className = 'preview-item';
-  item.innerHTML = `
-    <img src="${url}" alt="${name}" loading="lazy">
-    <div class="preview-item-label">${name}</div>
-  `;
-  previewGrid.appendChild(item);
+  if (pair.previewUrl) URL.revokeObjectURL(pair.previewUrl);
+  pair.previewUrl = url;
+  const img = document.getElementById(`pimg-${index}`);
+  if (img) img.src = url;
 }
 
 // ─── Download ZIP ─────────────────────────────────────────────────────────────
@@ -223,43 +192,123 @@ downloadBtn.addEventListener('click', async () => {
     return;
   }
 
-  downloadBtn.textContent = '⏳ Упаковка...';
   downloadBtn.disabled = true;
+  downloadBtn.textContent = '⏳ Рендеринг...';
 
   const zip = new JSZip();
-  for (const { name, blob } of renderedBlobs) {
-    const arrayBuffer = await blob.arrayBuffer();
-    zip.file(name, arrayBuffer);
+
+  for (let i = 0; i < pairs.length; i++) {
+    const { cover, logo, scale } = pairs[i];
+    downloadBtn.textContent = `⏳ ${i + 1} / ${pairs.length}`;
+    const blob = await renderBanner(cover, logo, scale, 1, rCtx, renderCanvas);
+    const name = buildFileName(cover.name, logo.name, i);
+    const buf = await blob.arrayBuffer();
+    zip.file(name, buf);
   }
 
   const zipBlob = await zip.generateAsync({ type: 'blob' });
-  const url = URL.createObjectURL(zipBlob);
   const a = document.createElement('a');
-  a.href = url;
+  a.href = URL.createObjectURL(zipBlob);
   a.download = 'banners.zip';
   a.click();
-  URL.revokeObjectURL(url);
 
   downloadBtn.textContent = '⬇️ Скачать все как ZIP';
   downloadBtn.disabled = false;
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Core renderer ────────────────────────────────────────────────────────────
+
+async function renderBanner(coverFile, logoFile, logoScale, renderScale, ctx, canvas) {
+  const W = Math.round(BANNER_W * renderScale);
+  const H = Math.round(BANNER_H * renderScale);
+
+  canvas.width  = W;
+  canvas.height = H;
+
+  const s = renderScale; // shorthand
+
+  const [coverImg, logoImg] = await Promise.all([
+    loadImage(coverFile),
+    loadImage(logoFile),
+  ]);
+
+  // 1. Cover
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(coverImg, 0, 0, W, H);
+
+  // 2. Gradient — clipped to triangle (top-right → bottom-right → bottom-left)
+  const lx = LOGO_X * s, ly = LOGO_Y * s;
+  const lw = LOGO_W * s, lh = LOGO_H * s;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(lx + lw, ly);       // top-right
+  ctx.lineTo(lx + lw, ly + lh);  // bottom-right
+  ctx.lineTo(lx,      ly + lh);  // bottom-left
+  ctx.closePath();
+  ctx.clip();
+
+  const grad = makeGradient(ctx, lx, ly, lw, lh, GRADIENT_ANGLE_DEG);
+  ctx.fillStyle = grad;
+  ctx.fillRect(lx, ly, lw, lh);
+  ctx.restore();
+
+  // 3. Logo — anchored to bottom-right of inner padding area
+  const innerW = (LOGO_W - INNER_PAD_RIGHT)  * s;
+  const innerH = (LOGO_H - INNER_PAD_BOTTOM) * s;
+
+  const { sw: fw, sh: fh } = fitInside(logoImg.width, logoImg.height, innerW, innerH);
+  const sw = fw * logoScale;
+  const sh = fh * logoScale;
+
+  const anchorX = lx + lw - INNER_PAD_RIGHT  * s;
+  const anchorY = ly + lh - INNER_PAD_BOTTOM * s;
+
+  ctx.drawImage(logoImg, anchorX - sw, anchorY - sh, sw, sh);
+
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+}
+
+// ─── Gradient helper ──────────────────────────────────────────────────────────
+
+function makeGradient(ctx, x, y, w, h, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx  = Math.sin(rad);
+  const dy  = -Math.cos(rad);
+  const halfLen = Math.abs(dx * w) / 2 + Math.abs(dy * h) / 2;
+  const cx = x + w / 2, cy = y + h / 2;
+
+  const grad = ctx.createLinearGradient(
+    cx - dx * halfLen, cy - dy * halfLen,
+    cx + dx * halfLen, cy + dy * halfLen
+  );
+  grad.addColorStop(0,   'rgba(0,0,0,1)');  // top-right = black
+  grad.addColorStop(0.6, 'rgba(0,0,0,0)');  // fade out
+  grad.addColorStop(1,   'rgba(0,0,0,0)');  // bottom-left = transparent
+  return grad;
+}
+
+// ─── Fit helper ───────────────────────────────────────────────────────────────
+
+function fitInside(srcW, srcH, dstW, dstH) {
+  const scale = Math.min(dstW / srcW, dstH / srcH);
+  return { sw: srcW * scale, sh: srcH * scale };
+}
+
+// ─── Utils ────────────────────────────────────────────────────────────────────
 
 function loadImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
-    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
     img.onerror = reject;
     img.src = url;
   });
 }
 
 function buildFileName(coverName, logoName, index) {
-  const base = stripExt(coverName);
-  const logoBase = stripExt(logoName);
-  return `banner_${String(index + 1).padStart(2, '0')}_${base}_${logoBase}.jpg`;
+  return `banner_${String(index + 1).padStart(2, '0')}_${stripExt(coverName)}_${stripExt(logoName)}.jpg`;
 }
 
 function stripExt(name) {
